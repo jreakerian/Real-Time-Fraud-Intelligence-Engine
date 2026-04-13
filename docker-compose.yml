@@ -56,16 +56,13 @@ services:
       - "15002:15002"
 
   producer:
-    image: python:3.10-slim  # A lightweight Python image
-    container_name: fraud_producer
-    depends_on:
-      - kafka
-    environment:
-      - PYTHONPATH=/opt/shared_deps
-    volumes:
-      # Mount your project folder just like the Spark container
-      - ./data_generator/:/opt/project
-      - ./:/opt/shared_deps
-    working_dir: /opt/project
-    # Install the required library and start the script automatically
-    command: sh -c "pip install kafka-python && python producer.py"
+      build: 
+        context: ./data_generator  # Path to the folder containing your Dockerfile
+      container_name: fraud_producer
+      depends_on:
+        - kafka
+      environment:
+        - PYTHONPATH=/opt/shared_deps
+      volumes:
+        - ./data_generator/:/opt/project
+        - ./:/opt/shared_deps
