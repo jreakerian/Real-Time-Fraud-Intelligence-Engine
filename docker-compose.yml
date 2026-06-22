@@ -1,7 +1,7 @@
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
-    container_name: zookeeper
+#    container_name: zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -10,7 +10,7 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
-    container_name: kafka
+#    container_name: kafka
     depends_on:
       - zookeeper
     ports:
@@ -28,7 +28,7 @@ services:
   # Optional: A UI to visualize your Kafka topics and messages
   kafdrop:
     image: obsidiandynamics/kafdrop:latest
-    container_name: kafdrop
+#    container_name: kafdrop
     depends_on:
       - kafka
     ports:
@@ -36,29 +36,97 @@ services:
     environment:
       KAFKA_BROKERCONNECT: kafka:29092
 
-  spark:
+  spark-master:
     image: bitnamilegacy/spark:3.5.1
-    container_name: spark
+    hostname: spark-master
+#    container_name: spark
     depends_on:
       - kafka
     user: root
     environment:
       - SPARK_MODE=master
+      - SPARK_LOCAL_HOSTNAME=spark-master
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - PYTHONPATH=/opt/shared_deps
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_MASTER_OPTS=-Dspark.plugins=org.apache.spark.sql.connect.SparkConnectPlugin
     volumes:
       - ./spark_jobs:/opt/app
       - ./:/opt/shared_deps
     working_dir: /opt/app
     ports:
       - "8080:8080" # Spark Master UI
-      - "15002:15002"
+      - "15002:15002" # Spark Connect
+      - "7077:7077" # Master internal port
 
+  spark-worker:
+    image: bitnamilegacy/spark:3.5.1
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+    volumes:
+      - ./spark_jobs:/opt/app
+      - ./:/opt/shared_deps
+    deploy:
+      replicas: 2
+  
+  # Service 1: The Real-time Alert System
+  fraud-stream-processor:
+    build: ./spark_jobs
+#    container_name: fraud_stream
+    depends_on:
+      - kafka
+      - spark-master
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      # CRITICAL: Inside Docker, we point to the service name 'spark', not 'localhost'
+      - SPARK_REMOTE=sc://spark-master:15002 
+      - PYTHONPATH=/opt/shared_deps
+    volumes:
+      - ./spark_jobs:/opt/app
+      - ./:/opt/shared_deps
+      - ./spark_jobs/checkpoints:/opt/app/checkpoints
+    command: python fraud_stream.py
+  
+  # Service 2: The Batch Ingest System
+  spark-batch-ingest:
+    build: ./spark_jobs
+#    container_name: spark_batch
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_REMOTE=sc://spark-master:15002
+    volumes:
+      - ./:/opt/shared_deps
+    # Batch jobs usually run once. Using 'profiles' allows you to 
+    # start this only when you want: 'docker-compose run spark-batch-ingest'
+    profiles: ["batch"]
+    command: python spark_batch.py
+
+  # Service 3: The Analytics Job
+  spark-analytics-gold:
+    build: ./spark_jobs
+#    container_name: fraud_aggregation
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_REMOTE=sc://spark-master:15002
+    volumes:
+      - ./:/opt/shared_deps
+    profiles: ["batch"]  # Grouped with batch jobs
+    command: python fraud_aggregation.py
+
+
+  # Service 4: The Data Generator
   producer:
       build: 
         context: ./data_generator  # Path to the folder containing your Dockerfile
-      container_name: fraud_producer
+#      container_name: fraud_producer
       depends_on:
         - kafka
       environment:
